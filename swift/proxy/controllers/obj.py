@@ -29,12 +29,9 @@ import itertools
 import mimetypes
 import time
 import math
-<<<<<<< HEAD
 import random
 from hashlib import md5
-=======
 import copy
->>>>>>> changing the copy method
 from swift import gettext_ as _
 from urllib import unquote, quote
 
@@ -361,7 +358,7 @@ class BaseObjectController(Controller):
         """Method for a file PUT coro"""
         # if conn.send is available then use it
         # otherwise, it's a local call and the object-server will be doing the gets
-        if conn.send: return
+        if not conn.send: return
 
         while True:
             chunk = conn.queue.get()
@@ -395,27 +392,30 @@ class BaseObjectController(Controller):
                         conf = {}
                         self.object_server = ObjServer(conf)
 
-                    self.app.logger.info('H4CK: Bypasssing network, talking to object-server directly. Req=%s' % req.environ)
-                    self.app.logger.info('H4CK:     Headers=%s' % headers)
+                    self.app.logger.info('H4CK: Bypasssing network, talking to object-server directly.')
 
-<<<<<<< HEAD
                     environ = req.environ.copy()
                     environ.update(headers)
                     local_req = Request(environ)
                     # fix path to include device
                     local_req.environ['PATH_INFO'] = quote('/' + node['device'] + '/' + str(part) + local_req.path)
-=======
+
                     local_req = copy.deepcopy(req)
->>>>>>> changing the copy method
+
+                    self.app.logger.info('H4CK: path=' % local_req.path)
+ 
                     class Dummy(): pass
                     conn = Dummy()
-                    conn.queue = Queue(self.app.put_queue_depth)
+                    conn.queue = Queued(self.app.put_queue_depth)
                     # hack in so that the object servers reads the deata directly from the queue
                     reader = Dummy()
-                    reader.read = lambda s: conn.queue.get()
+                    def read(lenth):
+                        self.app.logger.info('H4CK: reading... Queue=%s' % conn.queue)
+                        return conn.queue.get()
+                    reader.read = read
                     req.environ['wsgi.input'] = reader
                     # this is where the response whill be looked up by _get_responses
-                    self.app.logger.info('H4CK: Calling PUT with modified request. local_req=%s' % local_req.environ)
+                    self.app.logger.info('H4CK: Calling PUT with modified request.')
                     conn.resp = self.object_server.PUT(local_req)
                     # this is None so that _send_file is Noop'ed
                     conn.send = None
