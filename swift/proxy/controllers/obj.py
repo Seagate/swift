@@ -397,10 +397,11 @@ class BaseObjectController(Controller):
                     # TODO: build req object
                     original_env = req.environ.copy()
                     local_req = Request(original_env)
-                    conn = object()
+                    class Dummy(): pass
+                    conn = Dummy()
                     conn.queue = Queue(self.app.put_queue_depth)
                     # hack in so that the object servers reads the deata directly from the queue
-                    reader = object()
+                    reader = Dummy()
                     reader.read = lambda s: conn.queue.get()
                     req.environ['wsgi.input'] = reader
                     # this is where the response whill be looked up by _get_responses
