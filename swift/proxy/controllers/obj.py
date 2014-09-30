@@ -392,9 +392,9 @@ class BaseObjectController(Controller):
                         conf = {}
                         self.object_server = ObjServer(conf)
 
-                    self.app.logger.info('H4CK: Bypasssing network, talking to object-server directly.')
+                    self.app.logger.info('H4CK: Bypasssing network, talking to object-server directly. Req=%s' % req)
+                    self.app.logger.info('H4CK:     Headers=%s' % headers)
 
-                    # TODO: build req object
                     original_env = req.environ.copy()
                     local_req = Request(original_env)
                     class Dummy(): pass
@@ -405,6 +405,7 @@ class BaseObjectController(Controller):
                     reader.read = lambda s: conn.queue.get()
                     req.environ['wsgi.input'] = reader
                     # this is where the response whill be looked up by _get_responses
+                    self.app.logger.info('H4CK: Calling PUT with modified request. local_req=%s' % local_req)
                     conn.resp = self.object_server.PUT(local_req)
                     # this is None so that _send_file is Noop'ed
                     conn.send = None
