@@ -503,6 +503,7 @@ class ObjectController(BaseStorageServer):
                 device, partition, account, container, obj,
                 policy=policy)
         except DiskFileDeviceUnavailable:
+            self.logger.info('H4CK: Boom! Cant file disk file')
             return HTTPInsufficientStorage(drive=device, request=request)
         try:
             orig_metadata = disk_file.read_metadata()
