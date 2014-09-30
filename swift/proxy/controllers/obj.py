@@ -29,8 +29,12 @@ import itertools
 import mimetypes
 import time
 import math
+<<<<<<< HEAD
 import random
 from hashlib import md5
+=======
+import copy
+>>>>>>> changing the copy method
 from swift import gettext_ as _
 from urllib import unquote, quote
 
@@ -394,11 +398,15 @@ class BaseObjectController(Controller):
                     self.app.logger.info('H4CK: Bypasssing network, talking to object-server directly. Req=%s' % req.environ)
                     self.app.logger.info('H4CK:     Headers=%s' % headers)
 
+<<<<<<< HEAD
                     environ = req.environ.copy()
                     environ.update(headers)
                     local_req = Request(environ)
                     # fix path to include device
                     local_req.environ['PATH_INFO'] = quote('/' + node['device'] + '/' + str(part) + local_req.path)
+=======
+                    local_req = copy.deepcopy(req)
+>>>>>>> changing the copy method
                     class Dummy(): pass
                     conn = Dummy()
                     conn.queue = Queue(self.app.put_queue_depth)
