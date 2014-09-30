@@ -136,6 +136,8 @@ class BaseObjectController(Controller):
         self.account_name = unquote(account_name)
         self.container_name = unquote(container_name)
         self.object_name = unquote(object_name)
+        # To be used in case of a bypass
+        self.object_server = None
 
     def _listing_iter(self, lcontainer, lprefix, env):
         for page in self._listing_pages_iter(lcontainer, lprefix, env):
@@ -352,6 +354,10 @@ class BaseObjectController(Controller):
 
     def _send_file(self, conn, path):
         """Method for a file PUT coro"""
+        # if conn.send is available then use it
+        # otherwise, it's a local call and the object-server will be doing the gets
+        if conn.send: return
+
         while True:
             chunk = conn.queue.get()
             if not conn.failed:
@@ -377,6 +383,31 @@ class BaseObjectController(Controller):
         self.app.logger.thread_locals = logger_thread_locals
         for node in nodes:
             try:
+
+                # Bypass
+                if node['ip'] in ['localhost', '127.0.0.1']:
+                    # lazy initialize object-server
+                    if not self.object_server:
+                        # TODO: instantiate object-server
+                        pass
+
+                    self.app.logger.info('H4CK: Bypasssing network, talking to object-server directly.')
+                    # TODO: build req object
+                    req = None
+                    conn = object()
+                    conn.queue = Queue(self.app.put_queue_depth)
+                    # hack in so that the object servers reads the deata directly from the queue
+                    reader = object()
+                    reader.read = lambda s: conn.queue.get()
+                    req.environ['wsgi.input'] = reader
+                    # this is where the response whill be looked up by _get_responses
+                    conn.resp = self.object_server.PUT(req)
+                    # this is None so that _send_file is Noop'ed
+                    conn.send = None
+                    conn.node = node
+                    self.app.logger.info('H4CK: Response received from Object-server. %s' % conn.resp)
+                    return conn
+
                 start_time = time.time()
                 with ConnectionTimeout(self.app.conn_timeout):
                     conn = http_connect(
@@ -739,13 +770,32 @@ class BaseObjectController(Controller):
         node_iter = GreenthreadSafeIterator(
             self.iter_nodes_local_first(obj_ring, partition))
         pile = GreenPile(len(nodes))
+        
+        te = req.headers.get('transfer-encoding', '')
+        chunked = ('chunked' in te)
+
+        # Creating headers
+        # ----------------
+
+        outgoing_headers = self._backend_requests(
+            req, len(nodes), container_partition, containers,
+            delete_at_container, delete_at_part, delete_at_nodes)
+
+        # Sending headers to nodes
+        # ------------------------
 
         for nheaders in outgoing_headers:
             if expect:
                 nheaders['Expect'] = '100-continue'
+
+            # we probably need to pass the full req object for the local call case
             pile.spawn(self._connect_put_node, node_iter, partition,
                        req.swift_entity_path, nheaders,
                        self.app.logger.thread_locals)
+
+        # Creating connections
+        # ---------------------
+        # this guys just have a queue where chunks get added
 
         conns = [conn for conn in pile if conn]
 
@@ -767,12 +817,19 @@ class BaseObjectController(Controller):
         This method was added in the PUT method extraction change
         """
         min_conns = quorum_size(len(nodes))
+
+        # Transfering data
+        # ----------------
+        # send_file is noop'ed for local calls
+
         bytes_transferred = 0
         try:
             with ContextPool(len(nodes)) as pool:
                 for conn in conns:
                     conn.failed = False
-                    conn.queue = Queue(self.app.put_queue_depth)
+                    if not conn.queue:
+                        # for the bypass case, the queue is created before the call
+                        conn.queue = Queue(self.app.put_queue_depth)
                     pool.spawn(self._send_file, conn, req.path)
                 while True:
                     with ChunkReadTimeout(self.app.client_timeout):
