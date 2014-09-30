@@ -384,7 +384,6 @@ class BaseObjectController(Controller):
         self.app.logger.thread_locals = logger_thread_locals
         for node in nodes:
             try:
-
                 # Bypass
                 if node['ip'] in ['localhost', '127.0.0.1']:
                     # lazy initialize object-server
@@ -392,11 +391,14 @@ class BaseObjectController(Controller):
                         conf = {}
                         self.object_server = ObjServer(conf)
 
-                    self.app.logger.info('H4CK: Bypasssing network, talking to object-server directly. Req=%s' % req)
+                    self.app.logger.info('H4CK: Bypasssing network, talking to object-server directly. Req=%s' % req.environ)
                     self.app.logger.info('H4CK:     Headers=%s' % headers)
 
-                    original_env = req.environ.copy()
-                    local_req = Request(original_env)
+                    environ = req.environ.copy()
+                    environ.update(headers)
+                    local_req = Request(environ)
+                    # fix path to include device
+                    local_req.environ['PATH_INFO'] = quote('/' + node['device'] + '/' + str(part) + local_req.path)
                     class Dummy(): pass
                     conn = Dummy()
                     conn.queue = Queue(self.app.put_queue_depth)
@@ -405,14 +407,18 @@ class BaseObjectController(Controller):
                     reader.read = lambda s: conn.queue.get()
                     req.environ['wsgi.input'] = reader
                     # this is where the response whill be looked up by _get_responses
-                    self.app.logger.info('H4CK: Calling PUT with modified request. local_req=%s' % local_req)
+                    self.app.logger.info('H4CK: Calling PUT with modified request. local_req=%s' % local_req.environ)
                     conn.resp = self.object_server.PUT(local_req)
                     # this is None so that _send_file is Noop'ed
                     conn.send = None
                     conn.node = node
                     self.app.logger.info('H4CK: Response received from Object-server. %s' % conn.resp)
                     return conn
+            except Exception as ex:
+                 self.app.logger.error('H4CK: Boom!  %s' % ex)
+                 raise ex
 
+            try:
                 start_time = time.time()
                 with ConnectionTimeout(self.app.conn_timeout):
                     conn = http_connect(
