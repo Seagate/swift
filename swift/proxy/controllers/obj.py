@@ -401,15 +401,11 @@ class BaseObjectController(Controller):
                     local_req = Request(environ)
                     # fix path to include device
                     local_req.environ['PATH_INFO'] = quote('/' + node['device'] + '/' + str(part) + local_req.path)
-<<<<<<< HEAD
 
                     local_req = copy.deepcopy(req)
 
-                    self.app.logger.info('H4CK: path=' % local_req.path)
-=======
-                    self.app.logger.info('H4CK: path=%s' % local_req.path)
->>>>>>> Fixed typo
- 
+                    local_req.environ['PATH_INFO'] = '/' + node['device'] + '/' + str(part) + path
+
                     class Dummy(): pass
                     conn = Dummy()
                     conn.queue = Queue(self.app.put_queue_depth)

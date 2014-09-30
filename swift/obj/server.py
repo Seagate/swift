@@ -499,11 +499,14 @@ class ObjectController(BaseStorageServer):
                     return HTTPBadRequest(body=str(e), request=request,
                                           content_type='text/plain')
         try:
+            self.logger.info('H4CK: path=%s' % request.path)
+            self.logger.info('H4CK: device=%s, partition=%s, account=%s, container=%s, obj=%s, policy_idx=%s' % (
+                                device, partition, account, container, obj, policy_idx))
+
             disk_file = self.get_diskfile(
                 device, partition, account, container, obj,
                 policy=policy)
         except DiskFileDeviceUnavailable:
-            self.logger.info('H4CK: Boom! Cant file disk file')
             return HTTPInsufficientStorage(drive=device, request=request)
         try:
             orig_metadata = disk_file.read_metadata()
