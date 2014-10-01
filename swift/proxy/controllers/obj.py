@@ -36,9 +36,10 @@ from swift import gettext_ as _
 from urllib import unquote, quote
 
 from greenlet import GreenletExit
-from eventlet import GreenPile
+from eventlet import (GreenPile, spawn)
 from eventlet.queue import Queue
 from eventlet.timeout import Timeout
+from eventlet.event import Event
 
 from swift.common.utils import (
     readconf,
@@ -413,23 +414,44 @@ class BaseObjectController(Controller):
                     conn.queue = Queue(self.app.put_queue_depth)
                     # hack in so that the object servers reads the deata directly from the queue
                     reader = Dummy()
+                    size = int(local_req.environ['Content-Length'])
+                    self.app.logger.info('H4CK: Faking a transfer of %s bytes' % size)
                     def read(lenth):
-                        self.app.logger.info('H4CK: reading...')
+                        if conn.bytes_transferred == size:
+                            # we are done dude
+                            self.app.logger.info('H4CK: Read called, nothing left.')
+                            return ""
+                        self.app.logger.info('H4CK: reading (%s out of %s far)...' % (conn.bytes_transferred, size))
                         x = conn.queue.get()
                         conn.bytes_transferred += len(x)
-                        self.app.logger.info('H4CK: Read %s bytes so far' % conn.bytes_transferred)
+                        self.app.logger.info('H4CK: Read %s out of %s bytes so far' % (conn.bytes_transferred, size))
                         conn.queue.task_done()
                         return x
 
                     reader.read = read
                     local_req.environ['wsgi.input'] = reader
                     # this is where the response whill be looked up by _get_responses
-                    self.app.logger.info('H4CK: Calling PUT with modified request.')
-                    conn.resp = self.object_server.PUT(local_req)
+                    evt = Event()
+                    def process_request():
+                        self.app.logger.info('H4CK: Calling PUT with modified request.')
+                        conn.resp = self.object_server.PUT(local_req)
+                        self.app.logger.info('H4CK: Response received from Object-server. %s' % conn.resp)
+                        # make the status be just the code
+                        conn.resp.use_status_int = True
+                        self.app.logger.info('H4CK:    Status: %d Reason: %s' % (conn.resp.status, conn.resp.reason))
+                        evt.send()
+                    def get_response():
+                        self.app.logger.info('H4CK: Proxy waiting on response...')
+                        evt.wait()
+                        self.app.logger.info('H4CK: Giving response to proxy.')
+                        return conn.resp
+                    conn.resp = None
+                    conn.getresponse = get_response
                     # this is None so that _send_file is Noop'ed
                     conn.send = None
                     conn.node = node
-                    self.app.logger.info('H4CK: Response received from Object-server. %s' % conn.resp)
+                    # spawn work on a separate thread
+                    spawn(process_request)
                     return conn
             except Exception as ex:
                  self.app.logger.error('H4CK: Boom!  %s' % ex)
