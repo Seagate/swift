@@ -317,6 +317,7 @@ def _resp_status_property():
     response code from the RESPONSE_REASONS dict.
     """
     def getter(self):
+        if self.use_status_int: return self.status_int
         return '%s %s' % (self.status_int, self.title)
 
     def setter(self, value):
@@ -1146,6 +1147,11 @@ class Response(object):
         # can get wiped out when content_type sorts later in dict order.
         if 'charset' in kw and 'content_type' in kw:
             self.charset = kw['charset']
+        self.reason = self.title
+        self.use_status_int = False
+
+    def getheader(self, name):
+        return self.headers[name]
 
     @property
     def conditional_etag(self):
@@ -1355,6 +1361,7 @@ class Response(object):
         start_response(self.status, self.headers.items())
         return app_iter
 
+    def read(self): return self.body
 
 class HTTPException(Response, Exception):
 
