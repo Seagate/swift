@@ -506,7 +506,7 @@ class ObjectController(BaseStorageServer):
             disk_file = self.get_diskfile(
                 device, partition, account, container, obj,
                 policy=policy)
-        except DiskFileDeviceUnavailable:
+        except DiskFileDeviceUnavailable as ex:
             return HTTPInsufficientStorage(drive=device, request=request)
         try:
             orig_metadata = disk_file.read_metadata()

@@ -72,7 +72,7 @@ from swift.common.swob import HTTPAccepted, HTTPBadRequest, HTTPNotFound, \
     HTTPClientDisconnect, HTTPUnprocessableEntity, Response, HTTPException
 from swift.common.request_helpers import is_sys_or_user_meta, is_sys_meta, \
     remove_items, copy_header_subset, close_if_possible
-from kinetic_swift.obj.server import ObjectController as ObjServer
+from swift.obj.server import ObjectController as ObjServer
 
 
 def copy_headers_into(from_r, to_r):
@@ -96,8 +96,35 @@ def check_content_type(req):
                                       "swift_* is not a valid parameter name.")
     return None
 
-# H4CK
-object_server = None
+class TransferQueue():
+
+    def __init__(self, maxsize=None):
+        self.queue = LightQueue(maxsize)
+        self._evt = Event()
+        self.unfinished_tasks = True
+
+    def put(self, x): 
+        self.queue.put(x)
+
+    def get(self):
+        return self.queue.get()
+
+    def join(self): self._evt.wait()
+
+    def done(self):
+        self.unfinished_tasks = False
+        self._evt.send() 
+
+    def task_done(self): pass
+
+class LocalConn():
+
+    def __init__(self, node):
+        # this is None so that _send_file is Noop'ed
+        self.send = None
+        self.node = node
+        self.bytes_transferred = 0
+        self.resp = None
 
 class ObjectControllerRouter(object):
 
@@ -387,109 +414,58 @@ class BaseObjectController(Controller):
         self.app.logger.thread_locals = logger_thread_locals
         for node in nodes:
             try:
-                # Bypass
-                if node['ip'] in ['localhost', '127.0.0.1']:
-                    # lazy initialize object-server
-                    global object_server
-                    if not object_server:
-                        conf = readconf('/etc/swift/object-server.conf')
-                        conf['bind_port'] = 6090 # TODO: add option to not create socket
-                        # self.app.logger.info('H4CK: Config= %s' % conf)
-                        self.app.logger.info('H4CK: Object-server instantiated')
-			object_server = ObjServer(conf)
-
-                    # self.app.logger.info('H4CK: Bypasssing network, talking to object-server directly.')
+                # bypass if storing locally at we have the object server
+                if 'paco.object_server' in req.environ and \
+                        node['port'] == 6040 and node['ip'] in ['localhost', '127.0.0.1']:
+                    object_server = req.environ['paco.object_server']
 
                     environ = req.environ.copy()
                     environ.update(headers)
                     local_req = Request(environ)
                     # fix path to include device
-                    local_req.environ['PATH_INFO'] = quote('/' + node['device'] + '/' + str(part) + local_req.path)
-
-                    local_req = copy.deepcopy(req)
-
-                    local_req.environ['PATH_INFO'] = '/' + node['device'] + '/' + str(part) + path
-
+                    local_req.environ['PATH_INFO'] = '/' + node['device'] + \
+                        '/' + str(part) + path
                     local_req.environ['Bypassed'] = True
-                    # self.app.logger.info('H4CK: path=%s' % local_req.path)
-
-                    class Dummy(): pass
-                    conn = Dummy()
-                    conn.bytes_transferred = 0
-                    # self.app.logger.info('H4CK: Queue size=%s' % self.app.put_queue_depth)
-                    
-                    class TransferQueue():
-    
-                        def __init__(self, maxsize=None):
-                            self.queue = LightQueue(maxsize)
-                            self._evt = Event()
-                            self.unfinished_tasks = True
-                            # self._data = 'x' * 64*1024
-
-                        def put(self, x): 
-                            # sleep()
-                            self.queue.put(x)
-        
-                        def get(self):
-                            # sleep()
-                            # return self._data 
-                            return self.queue.get()
-    
-                        def join(self): self._evt.wait()
-    
-                        def done(self):
-                            self.unfinished_tasks = False
-                            self._evt.send() 
-
-                        def task_done(self): pass
-
+ 
+                    conn = LocalConn(node)
                     conn.queue = TransferQueue(self.app.put_queue_depth)
-                    # hack in so that the object servers reads the deata directly from the queue
+
+                    # hack in so that the object servers reads the data directly from the queue
+                    class Dummy(): pass
                     reader = Dummy()
                     size = int(local_req.environ['Content-Length'])
-                    # self.app.logger.info('H4CK: Faking a transfer of %s bytes' % size)
                     def read(lenth):
                         if conn.bytes_transferred == size:
-                            # we are done dude
-                            # self.app.logger.info('H4CK: Read called, nothing left.')
                             conn.queue.done()
                             return ""
-                        # self.app.logger.info('H4CK: reading (%s out of %s far)...' % (conn.bytes_transferred, size))
                         x = conn.queue.get()
                         conn.bytes_transferred += len(x)
-                        # self.app.logger.info('H4CK: Chunk_size=%s' % (len(x)))
-                        # self.app.logger.info('H4CK: Read %s out of %s bytes so far (%s)' % (conn.bytes_transferred, size, node['device']))
-                        # conn.queue.task_done()
                         return x
 
                     reader.read = read
                     local_req.environ['wsgi.input'] = reader
+
                     # this is where the response whill be looked up by _get_responses
                     evt = Event()
                     def process_request():
-                        # self.app.logger.info('H4CK: Calling PUT with modified request.')
-                        conn.resp = object_server.PUT(local_req)
-                        # self.app.logger.info('H4CK: Response received from Object-server. %s' % conn.resp)
+                        #conn.resp = object_server.PUT(local_req)
+                        self.app.logger.notice("call object server")
+                        conn.resp = local_req.get_response(object_server)
                         # make the status be just the code
                         conn.resp.use_status_int = True
-                        # self.app.logger.info('H4CK:    Status: %d Reason: %s' % (conn.resp.status, conn.resp.reason))
                         evt.send()
                     def get_response():
-                        # self.app.logger.info('H4CK: Proxy waiting on response...')
                         evt.wait()
-                        # self.app.logger.info('H4CK: Giving response to proxy.')
                         return conn.resp
-                    conn.resp = None
+
                     conn.getresponse = get_response
-                    # this is None so that _send_file is Noop'ed
-                    conn.send = None
-                    conn.node = node
+
                     # spawn work on a separate thread
                     spawn(process_request)
                     return conn
             except Exception as ex:
-                 self.app.logger.error('H4CK: Boom!  %s' % ex)
-                 raise ex
+                self.app.logger.exception("exception: %s" % ex.message)
+                raise ex
 
             try:
                 start_time = time.time()
@@ -914,7 +890,7 @@ class BaseObjectController(Controller):
             with ContextPool(len(nodes)) as pool:
                 for conn in conns:
                     conn.failed = False
-                    if not conn.queue:
+                    if not hasattr(conn, 'queue'):
                         # for the bypass case, the queue is created before the call
                         conn.queue = Queue(self.app.put_queue_depth)
                

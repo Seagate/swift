@@ -423,14 +423,26 @@ def run_server(conf, logger, sock, global_conf=None):
     max_clients = int(conf.get('max_clients', '1024'))
     pool = RestrictedGreenPool(size=max_clients)
     try:
+        logger.notice('check for single process servers')
+        sp_environ = {}
+        single_process_conf = conf.get('object_single_process', '')
+        if single_process_conf:
+            sp_path = "/etc/swift/" + single_process_conf
+            (sp_conf, logger, log_name) = \
+                _initrp(sp_path, 'object-server', None, None)
+            sp_app = loadapp(sp_conf['__file__'], global_conf=global_conf)
+            sp_environ = {'paco.object_server': sp_app}
+
         # Disable capitalizing headers in Eventlet if possible.  This is
         # necessary for the AWS SDK to work with swift3 middleware.
         argspec = inspect.getargspec(wsgi.server)
         if 'capitalize_response_headers' in argspec.args:
-            wsgi.server(sock, app, wsgi_logger, custom_pool=pool,
+            wsgi.server(sock, app, NullLogger(), custom_pool=pool,
+                        environ=sp_environ, 
                         capitalize_response_headers=False)
         else:
-            wsgi.server(sock, app, wsgi_logger, custom_pool=pool)
+            wsgi.server(sock, app, NullLogger(),
+                        environ=sp_environ, custom_pool=pool)
     except socket.error as err:
         if err[0] != errno.EINVAL:
             raise
