@@ -423,7 +423,6 @@ def run_server(conf, logger, sock, global_conf=None):
     max_clients = int(conf.get('max_clients', '1024'))
     pool = RestrictedGreenPool(size=max_clients)
     try:
-        logger.notice('check for single process servers')
         sp_environ = {}
         single_process_conf = conf.get('object_single_process', '')
         if single_process_conf:
