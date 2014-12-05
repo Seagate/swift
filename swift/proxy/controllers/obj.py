@@ -416,7 +416,7 @@ class BaseObjectController(Controller):
             try:
                 # bypass if storing locally at we have the object server
                 if 'paco.object_server' in req.environ and \
-                        node['port'] == 6040 and node['ip'] in ['localhost', '127.0.0.1']:
+                        node['ip'] in ['localhost', '127.0.0.1']:
                     object_server = req.environ['paco.object_server']
 
                     environ = req.environ.copy()
