@@ -531,7 +531,7 @@ class ObjectController(BaseStorageServer):
                 headers={'X-Backend-Timestamp': orig_timestamp.internal})
         orig_delete_at = int(orig_metadata.get('X-Delete-At') or 0)
         upload_expiration = time.time() + self.max_upload_time
-        skip_etag = request.environ.get('Bypassed', False)
+        skip_etag = request.environ.get('local-bypass', False)
         etag = md5()
         elapsed_time = 0
         try:
@@ -610,11 +610,10 @@ class ObjectController(BaseStorageServer):
                
                 if not skip_etag:
                     etag = etag.hexdigest()
-                    if 'etag' in request.headers and \
-                            request.headers['etag'].lower() != etag:
+                    if request_etag and request_etag != etag:
                         return HTTPUnprocessableEntity(request=request)
-                else: etag = ''
-                               
+                else: 
+                    etag = request.environ['local-etag-function']()
                 metadata = {
                     'X-Timestamp': request.timestamp.internal,
                     'Content-Type': request.headers['content-type'],

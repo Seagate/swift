@@ -32,6 +32,7 @@ import math
 import random
 from hashlib import md5
 import copy
+from hashlib import md5
 from swift import gettext_ as _
 from urllib import unquote, quote
 
@@ -103,7 +104,7 @@ class TransferQueue():
         self._evt = Event()
         self.unfinished_tasks = True
 
-    def put(self, x): 
+    def put(self, x):
         self.queue.put(x)
 
     def get(self):
@@ -113,7 +114,7 @@ class TransferQueue():
 
     def done(self):
         self.unfinished_tasks = False
-        self._evt.send() 
+        self._evt.send()
 
     def task_done(self): pass
 
@@ -121,10 +122,21 @@ class LocalConn():
 
     def __init__(self, node):
         # this is None so that _send_file is Noop'ed
+        self.bypass = True
         self.send = None
         self.node = node
         self.bytes_transferred = 0
         self.resp = None
+        self._etag = None
+        self._etag_evt = Event()
+
+    def etag_function(self):
+        self._etag_evt.wait()
+        return self._etag
+
+    def set_etag(self, value):
+        self._etag = value
+        self._etag_evt.send()
 
 class ObjectControllerRouter(object):
 
@@ -425,10 +437,11 @@ class BaseObjectController(Controller):
                     # fix path to include device
                     local_req.environ['PATH_INFO'] = '/' + node['device'] + \
                         '/' + str(part) + path
-                    local_req.environ['Bypassed'] = True
- 
+                    local_req.environ['local-bypass'] = True
+
                     conn = LocalConn(node)
                     conn.queue = TransferQueue(self.app.put_queue_depth)
+                    local_req.environ['local-etag-function'] = conn.etag_function
 
                     # hack in so that the object servers reads the data directly from the queue
                     class Dummy(): pass
@@ -448,8 +461,6 @@ class BaseObjectController(Controller):
                     # this is where the response whill be looked up by _get_responses
                     evt = Event()
                     def process_request():
-                        #conn.resp = object_server.PUT(local_req)
-                        self.app.logger.notice("call object server")
                         conn.resp = local_req.get_response(object_server)
                         # make the status be just the code
                         conn.resp.use_status_int = True
@@ -853,11 +864,8 @@ class BaseObjectController(Controller):
                        req.swift_entity_path, nheaders,
                        self.app.logger.thread_locals, req)
 
-        # self.app.logger.info('H4CK: all connect_put spawned')
-
         # Creating connections
         # ---------------------
-        # this guys just have a queue where chunks get added
 
         conns = [conn for conn in pile if conn]
 
@@ -882,20 +890,23 @@ class BaseObjectController(Controller):
 
         # Transfering data
         # ----------------
-        # send_file is noop'ed for local calls
 
         bytes_transferred = 0
         try:
-            # self.app.logger.info('H4CK: proxy about to read data from socket')
             with ContextPool(len(nodes)) as pool:
+                bypass_enabled = False
+                etag = None
+
                 for conn in conns:
                     conn.failed = False
-                    if not hasattr(conn, 'queue'):
-                        # for the bypass case, the queue is created before the call
+                    if hasattr(conn, 'bypass') and conn.bypass:
+                        bypass_enabled = True
+                    if not hasattr(conn, 'queue'): # bypass
                         conn.queue = Queue(self.app.put_queue_depth)
-               
                     pool.spawn(self._send_file, conn, req.path)
-                # self.app.logger.info('H4CK: proxy looping for reads...')
+                    # Calculate etag in the proxy
+                if bypass_enabled:
+                    etag = md5()
                 while True:
                     with ChunkReadTimeout(self.app.client_timeout):
                         try:
@@ -905,8 +916,9 @@ class BaseObjectController(Controller):
                                 for conn in conns:
                                     conn.queue.put('0\r\n\r\n')
                             break
+                    if etag:
+                        etag.update(chunk)
                     bytes_transferred += len(chunk)
-                    # self.app.logger.info('H4CK: proxy bytes transfered: %s' % (bytes_transferred))
                     if bytes_transferred > constraints.MAX_FILE_SIZE:
                         raise HTTPRequestEntityTooLarge(request=req)
                     for conn in list(conns):
@@ -921,6 +933,12 @@ class BaseObjectController(Controller):
                         req, conns, min_conns,
                         msg='Object PUT exceptions during'
                             ' send, %(conns)s/%(nodes)s required connections')
+                if bypass_enabled:
+                    etag = etag.hexdigest()
+                # pass etag to local object-server instances
+                if etag:
+                    for conn in conns:
+                        conn.set_etag(etag)
                 for conn in conns:
                     if conn.queue.unfinished_tasks:
                         conn.queue.join()
