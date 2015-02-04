@@ -433,7 +433,7 @@ class BaseObjectController(Controller):
 
                     environ = req.environ.copy()
                     environ.update(headers)
-                    local_req = Request(environ)
+                    local_req = Request.blank(path, headers=headers, environ=environ)
                     # fix path to include device
                     local_req.environ['PATH_INFO'] = '/' + node['device'] + \
                         '/' + str(part) + path
