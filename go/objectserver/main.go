@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/openstack/swift/go/hummingbird"
+	"github.com/openstack/swift/go/hummingbird/stores"
 )
 
 type ObjectHandler struct {
@@ -199,6 +200,9 @@ func (server *ObjectHandler) ObjGetHandler(writer *hummingbird.WebWriter, reques
 }
 
 func (server *ObjectHandler) ObjPutHandler(writer *hummingbird.WebWriter, request *hummingbird.WebRequest, vars map[string]string) {
+	fmt.Println("Nacho's PUT { target:", vars["device"], "}")
+	store := stores.NewKineticStore(server.logger)
+	
 	outHeaders := writer.Header()
 	if !hummingbird.ValidTimestamp(request.Header.Get("X-Timestamp")) {
 		http.Error(writer, "Invalid X-Timestamp header", http.StatusBadRequest)
@@ -212,7 +216,7 @@ func (server *ObjectHandler) ObjPutHandler(writer *hummingbird.WebWriter, reques
 		http.Error(writer, "No content type", http.StatusBadRequest)
 		return
 	}
-	hashDir := ObjHashDir(vars, server.driveRoot, server.hashPathPrefix, server.hashPathSuffix)
+	hashDir := ObjHashName(vars, server.hashPathPrefix, server.hashPathSuffix)
 
 	if deleteAt := request.Header.Get("X-Delete-At"); deleteAt != "" {
 		if deleteTime, err := hummingbird.ParseDate(deleteAt); err != nil || deleteTime.Before(time.Now()) {
@@ -228,52 +232,22 @@ func (server *ObjectHandler) ObjPutHandler(writer *hummingbird.WebWriter, reques
 		return
 	}
 
-	dataFile, metaFile := ObjectFiles(hashDir)
-	if dataFile != "" && !strings.HasSuffix(dataFile, ".ts") {
-		if inm := request.Header.Get("If-None-Match"); inm == "*" {
-			writer.StandardResponse(http.StatusPreconditionFailed)
-			return
-		}
-		if metadata, err := ObjectMetadata(dataFile, metaFile); err == nil {
-			if requestTime, err := hummingbird.ParseDate(requestTimestamp); err == nil {
-				if lastModified, err := hummingbird.ParseDate(metadata["X-Timestamp"].(string)); err == nil && !requestTime.After(lastModified) {
-					outHeaders.Set("X-Backend-Timestamp", metadata["X-Timestamp"].(string))
-					writer.StandardResponse(http.StatusConflict)
-					return
-				}
-			}
-			if inm := request.Header.Get("If-None-Match"); inm != "*" && strings.Contains(inm, metadata["ETag"].(string)) {
-				writer.StandardResponse(http.StatusPreconditionFailed)
-				return
-			}
-		}
-	}
-
-	fileName := hashDir + "/" + requestTimestamp + ".data"
-	tempFile, err := ObjTempFile(vars, server.driveRoot, "PUT")
+	// dataFile, metaFile := store.ObjNames(hashDir)
+	// there was something after this, not clear what extactly for
+    // [REDACTED] some checks, need to investigate proper refactoring
+	
+	objName := hashDir + "/" + requestTimestamp + ".data"
+	objWriter, err := store.CreateWriter(vars["device"], objName)	
 	if err != nil {
-		request.LogError("Error creating temporary file in %s: %s", server.driveRoot, err.Error())
+		request.LogError("Failed to create writer for %s: %s", objName, err.Error())
 		writer.StandardResponse(http.StatusInternalServerError)
 		return
 	}
-	defer func() { // cleanup if we don't finish
-		if writer.Status != http.StatusCreated {
-			tempFile.Close()
-			os.RemoveAll(tempFile.Name())
-		}
-	}()
-	if freeSpace, err := FreeDiskSpace(tempFile.Fd()); err == nil && server.fallocateReserve > 0 && freeSpace-request.ContentLength < server.fallocateReserve {
-		request.LogError("Hummingbird Not enough space available: %d available, %d requested", freeSpace, request.ContentLength)
-		writer.CustomErrorResponse(507, vars)
-		return
-	}
-	if !server.disableFallocate && request.ContentLength > 0 {
-		syscall.Fallocate(int(tempFile.Fd()), 1, 0, request.ContentLength)
-	}
+	
 	hash := md5.New()
-	totalSize, err := hummingbird.Copy(request.Body, tempFile, hash)
+	totalSize, err := hummingbird.Copy(request.Body, &objWriter, hash)
 	if err != nil {
-		request.LogError("Error writing to file %s: %s", tempFile.Name(), err.Error())
+		request.LogError("Error writing to %s: %s", objName, err.Error())
 		writer.StandardResponse(http.StatusInternalServerError)
 		return
 	}
@@ -297,27 +271,10 @@ func (server *ObjectHandler) ObjPutHandler(writer *hummingbird.WebWriter, reques
 		return
 	}
 	outHeaders.Set("ETag", metadata["ETag"])
-	WriteMetadata(tempFile.Fd(), metadata)
-	if !server.asyncFinalize { // for "super safe mode", this should happen before the rename.
-		tempFile.Sync()
-	}
-
-	if os.MkdirAll(hashDir, 0770) != nil || os.Rename(tempFile.Name(), fileName) != nil {
-		request.LogError("Error renaming object file: %s -> %s", tempFile.Name(), fileName)
-		writer.StandardResponse(http.StatusInternalServerError)
-		return
-	}
+	objWriter.SetMetadata(metadata)
+	
 	finalize := func() {
-		if server.asyncFinalize { // for "fast, lazy mode", this can happen after the rename.
-			tempFile.Sync()
-		}
-		tempFile.Close()
-		HashCleanupListDir(hashDir, request)
-		if fd, err := syscall.Open(hashDir, syscall.O_DIRECTORY|os.O_RDONLY, 0666); err == nil {
-			syscall.Fsync(fd)
-			syscall.Close(fd)
-		}
-		InvalidateHash(hashDir)
+		objWriter.Finalize()
 		UpdateContainer(metadata, request, vars, hashDir)
 		if request.Header.Get("X-Delete-At") != "" || request.Header.Get("X-Delete-After") != "" {
 			vars["driveRoot"] = server.driveRoot
@@ -326,6 +283,7 @@ func (server *ObjectHandler) ObjPutHandler(writer *hummingbird.WebWriter, reques
 			UpdateDeleteAt(request, vars, hashDir)
 		}
 	}
+	
 	if server.asyncFinalize {
 		go finalize()
 	} else {
@@ -525,9 +483,9 @@ func (server *ObjectHandler) ObjSyncHandler(writer *hummingbird.WebWriter, reque
 		writer.StandardResponse(http.StatusInternalServerError)
 		return
 	}
-	if !server.disableFallocate && request.ContentLength > 0 {
-		syscall.Fallocate(int(tempFile.Fd()), 1, 0, request.ContentLength)
-	}
+	//if !server.disableFallocate && request.ContentLength > 0 {
+	//	syscall.Fallocate(int(tempFile.Fd()), 1, 0, request.ContentLength)
+	//}
 	if _, err := hummingbird.Copy(request.Body, tempFile); err != nil {
 		writer.StandardResponse(http.StatusInternalServerError)
 		return
@@ -560,6 +518,8 @@ func (server *ObjectHandler) LogRequest(writer *hummingbird.WebWriter, request *
 }
 
 func (server *ObjectHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	fmt.Println("Something was received...")
+	
 	if request.URL.Path == "/healthcheck" {
 		writer.Header().Set("Content-Length", "2")
 		writer.WriteHeader(http.StatusOK)
@@ -655,6 +615,7 @@ func (server *ObjectHandler) ServeHTTP(writer http.ResponseWriter, request *http
 }
 
 func GetServer(conf string) (string, int, http.Handler, *syslog.Writer, error) {
+	fmt.Println("Nacho's Object-server")
 	handler := &ObjectHandler{driveRoot: "/srv/node", hashPathPrefix: "", hashPathSuffix: "",
 		allowedHeaders: map[string]bool{"Content-Disposition": true,
 			"Content-Encoding":      true,

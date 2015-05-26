@@ -26,7 +26,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/openstack/swift/go/hummingbird"
@@ -37,7 +36,8 @@ const METADATA_CHUNK_SIZE = 65536
 func GetXAttr(fileNameOrFd interface{}, attr string, value []byte) (int, error) {
 	switch v := fileNameOrFd.(type) {
 	case string:
-		return syscall.Getxattr(v, attr, value)
+		return 0, errors.New("Not implemented")
+		//return syscall.Getxattr(v, attr, value)
 	case uintptr:
 		return hummingbird.FGetXattr(v, attr, value)
 	}
@@ -315,6 +315,14 @@ func GetHashes(driveRoot string, device string, partition string, recalculate []
 	return hashes, nil
 }
 
+func ObjHashName(vars map[string]string, hashPathPrefix string, hashPathSuffix string) string {
+	h := md5.New()
+	io.WriteString(h, hashPathPrefix+"/"+vars["account"]+"/"+vars["container"]+"/"+vars["obj"]+hashPathSuffix)
+	hexHash := hex.EncodeToString(h.Sum(nil))
+	suffix := hexHash[29:32]
+	return filepath.Join(vars["partition"], suffix, hexHash)
+}
+
 func ObjHashDir(vars map[string]string, driveRoot string, hashPathPrefix string, hashPathSuffix string) string {
 	h := md5.New()
 	io.WriteString(h, hashPathPrefix+"/"+vars["account"]+"/"+vars["container"]+"/"+vars["obj"]+hashPathSuffix)
@@ -397,10 +405,11 @@ func ObjectMetadata(dataFile string, metaFile string) (map[interface{}]interface
 }
 
 func FreeDiskSpace(fd uintptr) (int64, error) {
-	var st syscall.Statfs_t
-	if err := syscall.Fstatfs(int(fd), &st); err != nil {
-		return 0, err
-	} else {
-		return int64(st.Frsize) * int64(st.Bavail), nil
-	}
+	return 1000,nil
+	//var st syscall.Statfs_t	
+	//if err := syscall.Fstatfs(int(fd), &st); err != nil {
+	//	return 0, err
+	//} else {
+	//	return int64(st.Frsize) * int64(st.Bavail), nil
+	//}
 }

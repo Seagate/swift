@@ -31,7 +31,7 @@ import (
 	"github.com/openstack/swift/go/proxyserver"
 )
 
-var Version = "0.1"
+var Version = "0.1.16"
 
 func WritePid(name string, pid int) error {
 	file, err := os.Create(fmt.Sprintf("/var/run/hummingbird/%s.pid", name))

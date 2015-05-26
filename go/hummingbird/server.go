@@ -271,7 +271,8 @@ func RunServers(configFile string, GetServer func(string) (string, int, http.Han
 		fmt.Printf("Server started on port %d\n", port)
 	}
 
-	ShutdownStdio()
+	//NO! I want it
+	//ShutdownStdio()
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
@@ -315,7 +316,7 @@ func RunDaemon(configFile string, GetDaemon func(string) (Daemon, error)) {
 		}
 	}
 	if len(daemons) > 0 {
-		ShutdownStdio()
+		//ShutdownStdio()
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 		<-c
