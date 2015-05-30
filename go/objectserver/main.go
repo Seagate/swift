@@ -200,7 +200,8 @@ func (server *ObjectHandler) ObjGetHandler(writer *hummingbird.WebWriter, reques
 }
 
 func (server *ObjectHandler) ObjPutHandler(writer *hummingbird.WebWriter, request *hummingbird.WebRequest, vars map[string]string) {
-	fmt.Println("Nacho's PUT { target:", vars["device"], "}")
+	fmt.Println("Nacho's PUT { target:", vars["device"], " }")
+	
 	store := stores.NewKineticStore(server.logger)
 	
 	outHeaders := writer.Header()
@@ -216,7 +217,7 @@ func (server *ObjectHandler) ObjPutHandler(writer *hummingbird.WebWriter, reques
 		http.Error(writer, "No content type", http.StatusBadRequest)
 		return
 	}
-	hashDir := ObjHashName(vars, server.hashPathPrefix, server.hashPathSuffix)
+	objectName := stores.NewObjectName(vars, server.hashPathPrefix, server.hashPathSuffix)
 
 	if deleteAt := request.Header.Get("X-Delete-At"); deleteAt != "" {
 		if deleteTime, err := hummingbird.ParseDate(deleteAt); err != nil || deleteTime.Before(time.Now()) {
@@ -236,18 +237,36 @@ func (server *ObjectHandler) ObjPutHandler(writer *hummingbird.WebWriter, reques
 	// there was something after this, not clear what extactly for
     // [REDACTED] some checks, need to investigate proper refactoring
 	
-	objName := hashDir + "/" + requestTimestamp + ".data"
-	objWriter, err := store.CreateWriter(vars["device"], objName)	
+	contentLength, err := strconv.ParseInt(request.Header.Get("Content-Length"), 10, 32)
 	if err != nil {
-		request.LogError("Failed to create writer for %s: %s", objName, err.Error())
+		request.LogError("Unknown length for object %s: %s", objectName, err.Error())
+		writer.StandardResponse(http.StatusInternalServerError)
+		return
+	}
+	objWriter, err := store.CreateWriter(vars["device"], objectName, int(contentLength), requestTimestamp)	
+	if err != nil {
+		request.LogError("Failed to create writer for %s: %s", objectName, err.Error())
 		writer.StandardResponse(http.StatusInternalServerError)
 		return
 	}
 	
-	hash := md5.New()
-	totalSize, err := hummingbird.Copy(request.Body, &objWriter, hash)
+	skipChecksum, err := strconv.ParseBool(request.Header.Get("Opt-NoChecksum"))
 	if err != nil {
-		request.LogError("Error writing to %s: %s", objName, err.Error())
+		skipChecksum = false
+	}
+	
+	var etag string	
+	var totalSize int64
+	if skipChecksum {
+		totalSize, err = io.Copy(&objWriter, request.Body) //dst, src
+		etag = strings.ToLower(request.Header.Get("ETag"))
+	} else {
+		hash := md5.New()
+		totalSize, err = hummingbird.Copy(request.Body, &objWriter, hash)
+		etag = hex.EncodeToString(hash.Sum(nil))
+	}	
+	if err != nil {
+		request.LogError("Error writing to %s: %s", objectName, err.Error())
 		writer.StandardResponse(http.StatusInternalServerError)
 		return
 	}
@@ -256,7 +275,7 @@ func (server *ObjectHandler) ObjPutHandler(writer *hummingbird.WebWriter, reques
 		"X-Timestamp":    requestTimestamp,
 		"Content-Type":   request.Header.Get("Content-Type"),
 		"Content-Length": strconv.FormatInt(totalSize, 10),
-		"ETag":           hex.EncodeToString(hash.Sum(nil)),
+		"ETag":           etag,
 	}
 	for key := range request.Header {
 		if allowed, ok := server.allowedHeaders[key]; (ok && allowed) ||
@@ -275,12 +294,12 @@ func (server *ObjectHandler) ObjPutHandler(writer *hummingbird.WebWriter, reques
 	
 	finalize := func() {
 		objWriter.Finalize()
-		UpdateContainer(metadata, request, vars, hashDir)
+		UpdateContainer(metadata, request, vars, objectName.Hash()) // TODO: might need fixing
 		if request.Header.Get("X-Delete-At") != "" || request.Header.Get("X-Delete-After") != "" {
 			vars["driveRoot"] = server.driveRoot
 			vars["hashPathPrefix"] = server.hashPathPrefix
 			vars["hashPathSuffix"] = server.hashPathSuffix
-			UpdateDeleteAt(request, vars, hashDir)
+			UpdateDeleteAt(request, vars, objectName.Hash()) // TODO: not implemented
 		}
 	}
 	

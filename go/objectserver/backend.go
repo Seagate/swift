@@ -315,14 +315,6 @@ func GetHashes(driveRoot string, device string, partition string, recalculate []
 	return hashes, nil
 }
 
-func ObjHashName(vars map[string]string, hashPathPrefix string, hashPathSuffix string) string {
-	h := md5.New()
-	io.WriteString(h, hashPathPrefix+"/"+vars["account"]+"/"+vars["container"]+"/"+vars["obj"]+hashPathSuffix)
-	hexHash := hex.EncodeToString(h.Sum(nil))
-	suffix := hexHash[29:32]
-	return filepath.Join(vars["partition"], suffix, hexHash)
-}
-
 func ObjHashDir(vars map[string]string, driveRoot string, hashPathPrefix string, hashPathSuffix string) string {
 	h := md5.New()
 	io.WriteString(h, hashPathPrefix+"/"+vars["account"]+"/"+vars["container"]+"/"+vars["obj"]+hashPathSuffix)
